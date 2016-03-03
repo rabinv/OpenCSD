@@ -1,0 +1,5 @@
+For the Perf tools
+-----------------
+* Enable other trace protocols when available (ETMv3 etc.)
+* Enable branch stack sampling/call stack sampling
+* Support/mark sw interrupts/sys calls
