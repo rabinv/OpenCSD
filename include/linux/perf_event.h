@@ -181,6 +181,10 @@ struct hw_perf_event {
 	/* Last sync'ed generation of filters */
 	unsigned long			addr_filters_gen;
 
+	/* HW specific configuration */
+	void				*drv_configs;
+	raw_spinlock_t			drv_configs_lock;
+
 /*
  * hw_perf_event::state flags; used to track the PERF_EF_* state.
  */
@@ -455,6 +459,13 @@ struct pmu {
 	 * Filter events for PMU-specific reasons.
 	 */
 	int (*filter_match)		(struct perf_event *event); /* optional */
+
+	/*
+	 * PMU driver specific configuration.
+	 */
+	int (*set_drv_configs)		(struct perf_event *event,
+					 struct list_head *drv_configs);
+					/* optional */
 };
 
 /**
@@ -489,6 +500,18 @@ struct perf_addr_filter {
 struct perf_addr_filters_head {
 	struct list_head	list;
 	raw_spinlock_t		lock;
+};
+
+/**
+ * struct perf_drv_config - PMU specific configuration as specified by users
+ * @entry:	link to the list.
+ * @config:	name of the configuration option.
+ * @option:	value associated to @config as set by users(optional).
+ */
+struct perf_drv_config {
+	struct list_head	entry;
+	char			*config;
+	char			*option;
 };
 
 /**
@@ -1194,6 +1217,11 @@ static inline bool has_addr_filter(struct perf_event *event)
 	return event->pmu->nr_addr_filters;
 }
 
+static inline bool has_drv_config(struct perf_event *event)
+{
+	return event->pmu->set_drv_configs;
+}
+
 /*
  * An inherited event uses parent's filters
  */
@@ -1209,6 +1237,9 @@ perf_event_addr_filters(struct perf_event *event)
 }
 
 extern void perf_event_addr_filters_sync(struct perf_event *event);
+extern void *perf_event_drv_configs_set(struct perf_event *event,
+					void *drv_configs);
+extern void *perf_event_drv_configs_get(struct perf_event *event);
 
 extern int perf_output_begin(struct perf_output_handle *handle,
 			     struct perf_event *event, unsigned int size);

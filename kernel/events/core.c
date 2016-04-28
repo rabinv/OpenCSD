@@ -4457,6 +4457,8 @@ static int perf_event_set_output(struct perf_event *event,
 				 struct perf_event *output_event);
 static int perf_event_set_filter(struct perf_event *event, void __user *arg);
 static int perf_event_set_bpf_prog(struct perf_event *event, u32 prog_fd);
+static int perf_event_set_drv_configs(struct perf_event *event,
+				      void __user *arg);
 
 static long _perf_ioctl(struct perf_event *event, unsigned int cmd, unsigned long arg)
 {
@@ -4526,6 +4528,10 @@ static long _perf_ioctl(struct perf_event *event, unsigned int cmd, unsigned lon
 		rcu_read_unlock();
 		return 0;
 	}
+
+	case PERF_EVENT_IOC_SET_DRV_CONFIGS:
+		return perf_event_set_drv_configs(event, (void __user *)arg);
+
 	default:
 		return -ENOTTY;
 	}
@@ -4558,6 +4564,7 @@ static long perf_compat_ioctl(struct file *file, unsigned int cmd,
 	switch (_IOC_NR(cmd)) {
 	case _IOC_NR(PERF_EVENT_IOC_SET_FILTER):
 	case _IOC_NR(PERF_EVENT_IOC_ID):
+	case _IOC_NR(PERF_EVENT_IOC_SET_DRV_CONFIGS):
 		/* Fix up pointer size (usually 4 -> 8 in 32-on-64-bit case */
 		if (_IOC_SIZE(cmd) == sizeof(compat_uptr_t)) {
 			cmd &= ~IOCSIZE_MASK;
@@ -8044,10 +8051,180 @@ static int perf_event_set_filter(struct perf_event *event, void __user *arg)
 	return ret;
 }
 
+static struct perf_drv_config *
+perf_drv_config_new(int cpu, struct list_head *drv_config_list)
+{
+	int node = cpu_to_node(cpu == -1 ? 0 : cpu);
+	struct perf_drv_config *drv_config;
+
+	drv_config = kzalloc_node(sizeof(*drv_config), GFP_KERNEL, node);
+	if (!drv_config)
+		return ERR_PTR(-ENOMEM);
+
+	INIT_LIST_HEAD(&drv_config->entry);
+	list_add_tail(&drv_config->entry, drv_config_list);
+
+	return drv_config;
+}
+
+static void free_drv_config_list(struct list_head *drv_config_list)
+{
+	struct perf_drv_config *drv_config, *itr;
+
+	list_for_each_entry_safe(drv_config, itr, drv_config_list, entry) {
+		list_del(&drv_config->entry);
+		kfree(drv_config->config);
+		kfree(drv_config->option);
+		kfree(drv_config);
+	}
+}
+
+/* How long does a configuration option really need to be?  */
+#define PERF_DRV_CONFIG_MAX	128
+
+/*
+ * PMU specific driver configuration as specified from user space.
+ * The data come in the form of an ascii string pushed down to the kernel
+ * using an ioctl() call.
+ *
+ * Two format are accepted: a singleton and in pairs.  All of the following
+ * are valid: cfg1, cfg2=config2, cfg3=anything_is_possible.
+ *
+ * It is up to each PMU driver to make sure they can work with the
+ * submitted configurables.
+ */
+static int
+perf_event_parse_drv_config(struct perf_event *event, char *options,
+			    struct list_head *drv_config_list)
+{
+	char *token;
+	int ret;
+	struct perf_drv_config *drv_config;
+
+	/*
+	 * First split the @options string in nibbles.  Using the above
+	 * example "cfg1", "cfg2=option2" and "cfg3=anything_is_possible"
+	 * will be processed.
+	 */
+	while ((token = strsep(&options, ",")) != NULL) {
+		char *nibble, *config, *option;
+
+		if (!*token)
+			continue;
+
+		/* Allocate a new driver config structure and queue it. */
+		drv_config = perf_drv_config_new(event->cpu, drv_config_list);
+		if (IS_ERR(drv_config)) {
+			ret = PTR_ERR(drv_config);
+			goto fail;
+		}
+
+		/*
+		 * The nibbles are either a "config" or a "config=option"
+		 * pair.  First get the config part.  Since strsep() sets
+		 * @nibble to the next valid token, nibble will be equal to
+		 * the option part or NULL after the first call.
+		 */
+		nibble = token;
+		config = strsep(&nibble, "=");
+		option = nibble;
+
+		/* This shouldn't be happening */
+		if (!config) {
+			ret = -EINVAL;
+			goto fail;
+		}
+
+		drv_config->config = kstrndup(config,
+					      PERF_DRV_CONFIG_MAX, GFP_KERNEL);
+		if (!drv_config->config) {
+			ret = -ENOMEM;
+			goto fail;
+		}
+
+		if (option) {
+			drv_config->option = kstrndup(option,
+						      PERF_DRV_CONFIG_MAX,
+						      GFP_KERNEL);
+			if (!drv_config->option) {
+				ret = -ENOMEM;
+				goto fail;
+			}
+		}
+	}
+
+	return 0;
+
+fail:
+	free_drv_config_list(drv_config_list);
+	return ret;
+}
+
+static int
+perf_event_set_drv_configs(struct perf_event *event, void __user *arg)
+{
+	char *drv_config_str;
+	int ret = 0;
+	LIST_HEAD(drv_config_list);
+
+	/*
+	 * No point in going further if the PMU driver doesn't support
+	 * cmd line configuration.
+	 */
+	if (!has_drv_config(event))
+		return -EINVAL;
+
+	/* Get a handle on user specified configuration */
+	drv_config_str = strndup_user(arg, PAGE_SIZE);
+	if (IS_ERR(drv_config_str))
+		return PTR_ERR(drv_config_str);
+
+	/* Make sure we have the right format */
+	ret = perf_event_parse_drv_config(event,
+					  drv_config_str, &drv_config_list);
+	if (ret)
+		goto out;
+
+	ret = event->pmu->set_drv_configs(event, &drv_config_list);
+	if (ret)
+		goto out;
+
+out:
+	kfree(drv_config_str);
+	free_drv_config_list(&drv_config_list);
+	return ret;
+}
+
+void *perf_event_drv_configs_set(struct perf_event *event, void *drv_configs)
+{
+	unsigned long flags;
+	void *old_drv_configs;
+
+	if (!event)
+		return ERR_PTR(-EINVAL);
+
+	raw_spin_lock_irqsave(&event->hw.drv_configs_lock, flags);
+	old_drv_configs = event->hw.drv_configs;
+	event->hw.drv_configs = drv_configs;
+	raw_spin_unlock_irqrestore(&event->hw.drv_configs_lock, flags);
+
+	return old_drv_configs;
+}
+EXPORT_SYMBOL_GPL(perf_event_drv_configs_set);
+
+void *perf_event_drv_configs_get(struct perf_event *event)
+{
+	if (!event)
+		return ERR_PTR(-EINVAL);
+
+	return perf_event_drv_configs_set(event, event->hw.drv_configs);
+
+}
+EXPORT_SYMBOL_GPL(perf_event_drv_configs_get);
+
 /*
  * hrtimer based swevent callback
  */
-
 static enum hrtimer_restart perf_swevent_hrtimer(struct hrtimer *hrtimer)
 {
 	enum hrtimer_restart ret = HRTIMER_RESTART;
