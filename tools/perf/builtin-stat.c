@@ -533,6 +533,7 @@ static int __run_perf_stat(int argc, const char **argv)
 	int status = 0;
 	const bool forks = (argc > 0);
 	bool is_pipe = STAT_RECORD ? perf_stat.file.is_pipe : false;
+	struct perf_evsel_config_term *err_term;
 
 	if (interval) {
 		ts.tv_sec  = interval / 1000;
@@ -601,6 +602,13 @@ try_again:
 		error("failed to set filter \"%s\" on event %s with %d (%s)\n",
 			counter->filter, perf_evsel__name(counter), errno,
 			str_error_r(errno, msg, sizeof(msg)));
+		return -1;
+	}
+
+	if (perf_evlist__apply_drv_configs(evsel_list, &counter, &err_term)) {
+		error("failed to set config \"%s\" on event %s with %d (%s)\n",
+		      err_term->val.drv_cfg, perf_evsel__name(counter), errno,
+		      strerror_r(errno, msg, sizeof(msg)));
 		return -1;
 	}
 

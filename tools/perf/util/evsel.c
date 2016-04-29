@@ -1062,6 +1062,30 @@ int perf_evsel__append_filter(struct perf_evsel *evsel,
 	return -1;
 }
 
+int perf_evsel__apply_drv_configs(struct perf_evsel *evsel,
+				  int ncpus, int nthreads,
+				  struct perf_evsel_config_term **err_term)
+{
+	int err = 0;
+	struct perf_evsel_config_term *term;
+
+	list_for_each_entry(term, &evsel->config_terms, list) {
+		if (term->type != PERF_EVSEL__CONFIG_TERM_DRV_CFG)
+			continue;
+
+		err = perf_evsel__run_ioctl(evsel, ncpus, nthreads,
+					    PERF_EVENT_IOC_SET_DRV_CONFIGS,
+					    (void *)term->val.drv_cfg);
+
+		if (err) {
+			*err_term = term;
+			break;
+		}
+	}
+
+	return err;
+}
+
 int perf_evsel__enable(struct perf_evsel *evsel)
 {
 	int nthreads = thread_map__nr(evsel->threads);
