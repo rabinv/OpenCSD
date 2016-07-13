@@ -1761,9 +1761,14 @@ static int set_filter(struct perf_evsel *evsel, const void *arg)
 {
 	const char *str = arg;
 
-	if (evsel == NULL || evsel->attr.type != PERF_TYPE_TRACEPOINT) {
+	if (evsel == NULL)
+		return -1;
+
+	if (evsel->attr.type != PERF_TYPE_TRACEPOINT &&
+	    evsel->attr.type != PERF_TYPE_HW_TRACER) {
 		fprintf(stderr,
-			"--filter option should follow a -e tracepoint option\n");
+			"--filter option should follow a -e tracepoint or HW tracer option\n");
+		fprintf(stderr, "evsel->name: %s type: 0x%x\n", evsel->name, evsel->attr.type);
 		return -1;
 	}
 

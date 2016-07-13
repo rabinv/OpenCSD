@@ -631,7 +631,9 @@ static int __init etm_perf_init(void)
 	etm_pmu.addr_filters_validate	= etm_addr_filters_validate;
 	etm_pmu.nr_addr_filters		= ETM_ADDR_CMP_MAX;
 
-	ret = perf_pmu_register(&etm_pmu, CORESIGHT_ETM_PMU_NAME, -1);
+	ret = perf_pmu_register(&etm_pmu,
+				CORESIGHT_ETM_PMU_NAME,
+				PERF_TYPE_HW_TRACER);
 	if (ret == 0)
 		etm_perf_up = true;
 

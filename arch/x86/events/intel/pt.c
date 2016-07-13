@@ -1419,7 +1419,7 @@ static __init int pt_init(void)
 	pt_pmu.pmu.nr_addr_filters       =
 		pt_cap_get(PT_CAP_num_address_ranges);
 
-	ret = perf_pmu_register(&pt_pmu.pmu, "intel_pt", -1);
+	ret = perf_pmu_register(&pt_pmu.pmu, "intel_pt", PERF_TYPE_HW_TRACER);
 
 	return ret;
 }
